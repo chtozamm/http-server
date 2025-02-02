@@ -6,6 +6,8 @@ A simple HTTP server that provides secure communication and logging features.
 
 - RESTful API
 - Web application
+- Basic authentication
+<!-- - Rate limiting -->
 - TLS
 - Redirect HTTP to HTTPS
 - Configured timeouts

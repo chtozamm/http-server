@@ -1,44 +1,58 @@
 package main
 
 import (
-	"crypto/tls"
+	"crypto/sha256"
+	"crypto/subtle"
 	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"slices"
 	"time"
 )
 
+type application struct {
+	auth struct {
+		username string
+		password string
+	}
+}
+
 func main() {
+	app := new(application)
+
+	app.auth.username = os.Getenv("AUTH_USERNAME")
+	if app.auth.username == "" {
+		log.Fatal("Missing AUTH_USERNAME environmental variable")
+	}
+
+	app.auth.password = os.Getenv("AUTH_PASSWORD")
+	if app.auth.password == "" {
+		log.Fatal("Missing AUTH_PASSWORD environmental variable")
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 	mux.HandleFunc("GET /{$}", rootHandler)
 	mux.HandleFunc("GET /api/v1/posts", getPosts)
 	mux.HandleFunc("GET /api/v1/posts/{id}", getPost)
-	mux.HandleFunc("POST /api/v1/posts", createPost)
-	mux.HandleFunc("PUT /api/v1/posts/{id}", updatePost)
-	mux.HandleFunc("DELETE /api/v1/posts/{id}", deletePost)
-	withMiddleware := requestLogger((mux))
-
-	cert, err := tls.LoadX509KeyPair("certs/localhost.pem", "certs/localhost-key.pem")
-	if err != nil {
-		log.Fatalf("Failed to get certificates: %v\n", err)
-	}
-	TLSConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
+	mux.HandleFunc("POST /api/v1/posts", app.basicAuth(createPost))
+	mux.HandleFunc("PUT /api/v1/posts/{id}", app.basicAuth(updatePost))
+	mux.HandleFunc("DELETE /api/v1/posts/{id}", app.basicAuth(deletePost))
+	withRequestLogger := requestLogger((mux))
 
 	httpsServer := &http.Server{
 		Addr:              ":443",
-		Handler:           withMiddleware,
+		Handler:           withRequestLogger,
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		ReadHeaderTimeout: 2 * time.Second,
-		TLSConfig:         TLSConfig,
 	}
 
 	go func() {
 		log.Println("HTTPS Server is listening on", httpsServer.Addr)
-		log.Fatal(httpsServer.ListenAndServeTLS("", ""))
+		log.Fatal(httpsServer.ListenAndServeTLS("certs/localhost.pem", "certs/localhost-key.pem"))
 	}()
 
 	httpServer := &http.Server{
@@ -119,4 +133,27 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
+}
+
+func (app *application) basicAuth(next http.HandlerFunc) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if ok {
+			usernameHash := sha256.Sum256([]byte(username))
+			passwordHash := sha256.Sum256([]byte(password))
+			expectedUsernameHash := sha256.Sum256([]byte(app.auth.username))
+			expectedPasswordHash := sha256.Sum256([]byte(app.auth.password))
+
+			usernameMatch := (subtle.ConstantTimeCompare(usernameHash[:], expectedUsernameHash[:]) == 1)
+			passwordMatch := (subtle.ConstantTimeCompare(passwordHash[:], expectedPasswordHash[:]) == 1)
+
+			if usernameMatch && passwordMatch {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	})
 }
