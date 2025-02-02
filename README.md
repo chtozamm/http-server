@@ -4,10 +4,11 @@ A simple HTTP server that provides secure communication and logging features.
 
 ## Features
 
+- RESTful API
+- Web application
 - TLS
 - Redirect HTTP to HTTPS
 - Configured timeouts
-- RESTful API implementation
 - Logger middleware
 - Continuous integration with GitHub Actions
 - Unit tests

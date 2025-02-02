@@ -14,6 +14,9 @@
 ├── docs/
 │ └── architecture.md
 │
+├── static/
+│ └── index.html
+│
 ├── .gitignore
 │
 ├── go.mod
@@ -21,6 +24,8 @@
 ├── main_test.go
 │
 ├── main.go
+│
+├── posts.go
 │
 ├── README.md
 │
