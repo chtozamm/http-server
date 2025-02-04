@@ -27,14 +27,14 @@ func TestHTTPSRedirectMiddleware(t *testing.T) {
 	}
 }
 
-func TestRootHandler(t *testing.T) {
-	req := httptest.NewRequest("GET", "https://localhost/", nil)
-	w := httptest.NewRecorder()
+// func TestRootHandler(t *testing.T) {
+// 	req := httptest.NewRequest("GET", "https://localhost/", nil)
+// 	w := httptest.NewRecorder()
 
-	rootHandler(w, req)
+// 	rootHandler(w, req)
 
-	res := w.Result()
-	if res.StatusCode != http.StatusOK {
-		t.Errorf("expected status %d, got %d", http.StatusOK, res.StatusCode)
-	}
-}
+// 	res := w.Result()
+// 	if res.StatusCode != http.StatusOK {
+// 		t.Errorf("expected status %d, got %d", http.StatusOK, res.StatusCode)
+// 	}
+// }

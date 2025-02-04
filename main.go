@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"errors"
 	"html/template"
 	"log"
+	"mime"
 	"net/http"
 	"os"
-	"slices"
+	"os/signal"
+	"syscall"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type application struct {
@@ -16,11 +22,23 @@ type application struct {
 		username string
 		password string
 	}
+	db *pgxpool.Pool
 }
 
 func main() {
+	var err error
+
 	app := new(application)
 
+	// Create concurrency safe database connection pool
+	dbpool, err := pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
+	if err != nil {
+		log.Fatalf("Unable to connect to database: %v\n", err)
+	}
+	defer dbpool.Close()
+	app.db = dbpool
+
+	// Get credentials for basic authentication
 	app.auth.username = os.Getenv("AUTH_USERNAME")
 	if app.auth.username == "" {
 		log.Fatal("Missing AUTH_USERNAME environmental variable")
@@ -31,37 +49,72 @@ func main() {
 		log.Fatal("Missing AUTH_PASSWORD environmental variable")
 	}
 
+	// Define routes
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
-	mux.HandleFunc("GET /{$}", rootHandler)
-	mux.HandleFunc("GET /api/v1/posts", getPosts)
-	mux.HandleFunc("GET /api/v1/posts/{id}", getPost)
-	mux.HandleFunc("POST /api/v1/posts", app.basicAuth(createPost))
-	mux.HandleFunc("PUT /api/v1/posts/{id}", app.basicAuth(updatePost))
-	mux.HandleFunc("DELETE /api/v1/posts/{id}", app.basicAuth(deletePost))
-	withRequestLogger := requestLogger((mux))
+	mux.HandleFunc("GET /{$}", app.rootHandler)
+	mux.HandleFunc("GET /api/v1/posts", app.getPosts)
+	mux.HandleFunc("GET /api/v1/posts/{id}", app.getPost)
+	mux.Handle("POST /api/v1/posts", app.basicAuthMiddleware(enforceJSONMiddleware(app.createPost)))
+	mux.Handle("PUT /api/v1/posts/{id}", app.basicAuthMiddleware(enforceJSONMiddleware(app.updatePost)))
+	mux.Handle("DELETE /api/v1/posts/{id}", app.basicAuthMiddleware(app.deletePost))
+	mux.HandleFunc("GET /api/v1/healthz", app.healthCheckHandler)
 
+	// Main HTTPS server
 	httpsServer := &http.Server{
 		Addr:              ":443",
-		Handler:           withRequestLogger,
+		Handler:           requestLoggerMiddleware(mux),
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		ReadHeaderTimeout: 2 * time.Second,
 	}
 
+	// Start HTTPS server
 	go func() {
-		log.Println("HTTPS Server is listening on", httpsServer.Addr)
-		log.Fatal(httpsServer.ListenAndServeTLS("certs/localhost.pem", "certs/localhost-key.pem"))
+		log.Printf("HTTPS Server is listening on %s", httpsServer.Addr)
+		err := httpsServer.ListenAndServeTLS("certs/localhost.pem", "certs/localhost-key.pem")
+		if !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
 	}()
 
+	// HTTP server for redirects to HTTPS
 	httpServer := &http.Server{
-		Addr:    ":80",
-		Handler: httpsRedirectMiddleware(http.NotFoundHandler()),
+		Addr:              ":80",
+		Handler:           requestLoggerMiddleware(httpsRedirectMiddleware(http.NotFoundHandler())),
+		ReadHeaderTimeout: 2 * time.Second,
 	}
 
-	log.Println("HTTP Server is listening on :80 for redirection")
-	log.Fatal(httpServer.ListenAndServe())
+	// Start HTTP server
+	go func() {
+		log.Print("HTTP Server is listening on :80 for redirection")
+		err := httpServer.ListenAndServe()
+		if !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	}()
+
+	// Graceful shutdown
+	shutdownError := make(chan error)
+	go func() {
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		s := <-quit
+		log.Printf("Shutting down server: %v", s)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		shutdownError <- httpsServer.Shutdown(ctx)
+	}()
+
+	err = <-shutdownError
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Print("Server has been stopped")
 }
 
 func httpsRedirectMiddleware(next http.Handler) http.Handler {
@@ -83,7 +136,7 @@ func httpsRedirectMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func requestLogger(next http.Handler) http.Handler {
+func requestLoggerMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(rec, r)
@@ -102,40 +155,29 @@ func (rec *responseRecorder) WriteHeader(code int) {
 	rec.ResponseWriter.WriteHeader(code)
 }
 
-func rootHandler(w http.ResponseWriter, r *http.Request) {
-	mu.Lock()
-	defer mu.Unlock()
-
-	var postList []post
-	for _, post := range posts {
-		postList = append(postList, post)
+func (app *application) rootHandler(w http.ResponseWriter, r *http.Request) {
+	postList, err := app.getPostsList()
+	if err != nil {
+		log.Printf("Failed to get posts: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 
-	slices.SortFunc(postList, func(a, b post) int {
-		if a.ID == b.ID {
-			return 0
-		} else if a.ID < b.ID {
-			return 1
-		} else {
-			return -1
-		}
-	})
-
-	tmpl, err := template.ParseFiles("static/index.html")
+	tmpl, err := template.ParseFiles("./static/index.html")
 	if err != nil {
-		log.Println("Failed to load template:", err)
+		log.Printf("Failed to load template: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
 	if err := tmpl.Execute(w, postList); err != nil {
-		log.Println("Failed to render template:", err)
+		log.Printf("Failed to render template: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 }
 
-func (app *application) basicAuth(next http.HandlerFunc) http.HandlerFunc {
+func (app *application) basicAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		username, password, ok := r.BasicAuth()
 		if ok {
@@ -155,5 +197,50 @@ func (app *application) basicAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		w.Header().Set("WWW-Authenticate", `Basic realm="restricted", charset="UTF-8"`)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	})
+}
+
+func (app *application) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Ping database
+	err = app.db.Ping(ctx)
+	if err != nil {
+		log.Printf("Database failure: %v", err)
+		http.Error(w, "Database failure", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+
+	_, err = w.Write([]byte("OK"))
+	if err != nil {
+		log.Printf("Failed to write the data to the connection: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+}
+
+func enforceJSONMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentType := r.Header.Get("Content-Type")
+
+		if contentType != "" {
+			mt, _, err := mime.ParseMediaType(contentType)
+			if err != nil {
+				http.Error(w, "Malformed Content-Type header", http.StatusBadRequest)
+				return
+			}
+
+			if mt != "application/json" {
+				http.Error(w, "Content-Type header must be application/json", http.StatusUnsupportedMediaType)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
 	})
 }

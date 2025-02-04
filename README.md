@@ -1,19 +1,28 @@
 # HTTP Server
 
-A simple HTTP server that provides secure communication and logging features.
+An extensible HTTP server template.
 
 ## Features
 
 - RESTful API
 - Web application
 - Basic authentication
-<!-- - Rate limiting -->
+- Graceful shutdown
+  <!-- - Rate limiting -->
+  <!-- - gRPC -->
+- Database integration
 - TLS
 - Redirect HTTP to HTTPS
-- Configured timeouts
+- Configured request/response timeouts
 - Logger middleware
+- Media type enforcement for data-driven requests
 - Continuous integration with GitHub Actions
 - Unit tests
+- Health check
+  <!-- - Export Prometheus metrics -->
+- Containerization with Docker
+- Container orchestration with Docker Compose
+- Development shell scripts
 
 ## Prerequisites
 

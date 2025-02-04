@@ -1,7 +1,11 @@
 window.addEventListener("load", function (event) {
   const author = localStorage.getItem("author")
   document.getElementById("author").value = author
-  document.getElementById("message").focus()
+  if (document.getElementById("author").value != "") {
+    document.getElementById("message").focus()
+  } else {
+    document.getElementById("author").focus()
+  }
 })
 
 document
