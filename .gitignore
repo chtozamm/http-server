@@ -1,4 +1,9 @@
 *.exe
-*.pem
 *.log
+*.local*
 tmp
+
+# Certificates and private keys
+*.key
+*.crt
+*.pem

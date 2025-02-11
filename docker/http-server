@@ -7,8 +7,9 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o http-server -ldflags="-s -
 FROM docker.io/alpine:latest
 RUN mkdir /app && adduser -h /app -D http-server
 WORKDIR /app
-COPY ./certs ./certs
+# COPY ./certs ./certs
 COPY ./static ./static
 COPY --chown=http-server --from=builder /app/http-server .
-EXPOSE 80 443
+# EXPOSE 80 443
+
 CMD ["./http-server"]

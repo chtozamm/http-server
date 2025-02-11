@@ -2,6 +2,7 @@ param (
     [ValidateSet("up", "down", "logs", "rebuild")]
     [string]$Command,
 
+    [ValidateSet("http-server", "http-server-postgres", "all")]
     [string]$ImageName
 )
 
@@ -19,9 +20,28 @@ function down {
 }
 
 function logs {
-    foreach ($image in $DockerImages) {
-        Write-Host "Getting the logs from $image..."
-        docker logs --tail 5 $image
+    if (-not $ImageName) {
+        Write-Error "No image name provided for getting logs."
+        Write-Host "Usage: .\$PSCommandName logs <IMAGE_NAME>"
+        exit 1
+    }
+    
+    if ($ImageName -eq "all") {
+        foreach ($image in $DockerImages) {
+            Write-Host "`n> Getting the logs from $image...`n" -ForegroundColor Green
+            docker logs $image
+            Write-Host ""
+        }
+        return
+    }
+
+    if ($DockerImages -contains $ImageName) {
+        Write-Host "`n> Getting the logs from $ImageName...`n" -ForegroundColor Green
+        docker logs $ImageName
+        Write-Host ""
+    }
+    else {
+        Write-Error "Invalid image name: $ImageName. Valid options are: $($DockerImages -join ', ')"
     }
 }
 
@@ -47,7 +67,8 @@ function rebuild {
         down
         docker image rm $ImageName
         up
-    } else {
+    }
+    else {
         Write-Error "Invalid image name: $ImageName. Valid options are: $($DockerImages -join ', ')"
     }
 }

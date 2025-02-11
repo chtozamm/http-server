@@ -1,19 +1,52 @@
+name: "http-server"
 services:
-  http-server:
+  http-server-1:
     build:
       context: ..
       dockerfile: "docker/http-server"
     image: http-server:latest
     container_name: http-server
-    ports:
-      - 80:80
-      - 443:443
     environment:
       - AUTH_USERNAME=${AUTH_USERNAME}
       - AUTH_PASSWORD=${AUTH_PASSWORD}
-      - DATABASE_URL=postgres://username:password@postgres:5432/postgres
+      - DATABASE_URL=postgres://${DB_USERNAME}:${DB_PASSWORD}@postgres:5432/postgres
+      # - REDIS_HOST=redis
+      # - REDIS_PORT=6379
+      # - APP_ID=1
+    volumes:
+      - ../config.yaml:/app/config.yaml
     depends_on:
       - postgres
+
+  http-server-2:
+    image: http-server:latest
+    container_name: http-server-2
+    environment:
+      - AUTH_USERNAME=${AUTH_USERNAME}
+      - AUTH_PASSWORD=${AUTH_PASSWORD}
+      - DATABASE_URL=postgres://${DB_USERNAME}:${DB_PASSWORD}@postgres:5432/postgres
+      # - REDIS_HOST=redis
+      # - REDIS_PORT=6379
+      # - APP_ID=2
+    volumes:
+      - ../config.yaml:/app/config.yaml
+    depends_on:
+      - http-server-1
+
+  http-server-3:
+    image: http-server:latest
+    container_name: http-server-3
+    environment:
+      - AUTH_USERNAME=${AUTH_USERNAME}
+      - AUTH_PASSWORD=${AUTH_PASSWORD}
+      - DATABASE_URL=postgres://${DB_USERNAME}:${DB_PASSWORD}@postgres:5432/postgres
+      # - REDIS_HOST=redis
+      # - REDIS_PORT=6379
+      # - APP_ID=3
+    volumes:
+      - ../config.yaml:/app/config.yaml
+    depends_on:
+      - http-server-2
 
   postgres:
     build:
@@ -22,13 +55,31 @@ services:
     image: http-server-postgres:latest
     container_name: http-server-postgres
     environment:
-      POSTGRES_USER: username
-      POSTGRES_PASSWORD: password
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: postgres
-    # ports:
-    #   - "5432:5432"
     volumes:
-      - http-server-postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ../config/nginx.conf:/etc/nginx/nginx.conf
+      - ../certs/nginx-selfsigned.crt:/usr/local/share/ca-certificates/nginx-selfsigned.crt
+      - ../certs/nginx-selfsigned.key:/usr/local/share/ca-certificates/nginx-selfsigned.key
+    depends_on:
+      - http-server-1
+
+  # redis:
+  #   image: redis:latest
+  #   container_name: redis
+  #   volumes:
+  #     - redis-data:/data
 
 volumes:
-  http-server-postgres_data:
+  postgres_data:
+  # redis-data:

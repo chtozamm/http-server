@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"html/template"
 	"log"
 	"mime"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	pb "github.com/chtozamm/http-server/grpc"
 )
 
 type application struct {
@@ -22,7 +25,9 @@ type application struct {
 		username string
 		password string
 	}
-	db *pgxpool.Pool
+	db             *pgxpool.Pool
+	enabledModules map[string]bool
+	pb.UnimplementedHttpServerServiceServer
 }
 
 func main() {
@@ -30,29 +35,65 @@ func main() {
 
 	app := new(application)
 
-	// Create concurrency safe database connection pool
-	dbpool, err := pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
+	app.enabledModules = map[string]bool{}
+
+	cfg, err := loadConfig("config.yaml")
 	if err != nil {
-		log.Fatalf("Unable to connect to database: %v\n", err)
-	}
-	defer dbpool.Close()
-	app.db = dbpool
-
-	// Get credentials for basic authentication
-	app.auth.username = os.Getenv("AUTH_USERNAME")
-	if app.auth.username == "" {
-		log.Fatal("Missing AUTH_USERNAME environmental variable")
+		log.Fatalf("Failed to load configuration from file: %v\n", err)
 	}
 
-	app.auth.password = os.Getenv("AUTH_PASSWORD")
-	if app.auth.password == "" {
-		log.Fatal("Missing AUTH_PASSWORD environmental variable")
+	for _, module := range cfg.Modules {
+		app.enabledModules[module] = true
 	}
+
+	if app.enabledModules["database"] {
+		// Create concurrency safe database connection pool
+		dbpool, err := pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
+		if err != nil {
+			log.Fatalf("Unable to connect to database: %v\n", err)
+		}
+		defer dbpool.Close()
+		app.db = dbpool
+	}
+
+	if app.enabledModules["auth"] {
+		// Get credentials for basic authentication
+		app.auth.username = os.Getenv("AUTH_USERNAME")
+		if app.auth.username == "" {
+			log.Fatal("Missing AUTH_USERNAME environmental variable")
+		}
+
+		app.auth.password = os.Getenv("AUTH_PASSWORD")
+		if app.auth.password == "" {
+			log.Fatal("Missing AUTH_PASSWORD environmental variable")
+		}
+	}
+
+	// if app.enabledModules["grpc"] {
+	// 	// Start gRPC server
+	// 	go func() {
+	// 		lis, err := net.Listen("tcp", ":50051")
+	// 		if err != nil {
+	// 			log.Fatalf("Failed to announce listener: %v", err)
+	// 		}
+	// 		s := grpc.NewServer()
+	// 		pb.RegisterHttpServerServiceServer(s, app)
+	// 		if err := s.Serve(lis); err != nil {
+	// 			log.Fatalf("Failed to start gRPC server: %v", err)
+	// 		}
+	// 	}()
+	// }
 
 	// Define routes
 	mux := http.NewServeMux()
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
-	mux.HandleFunc("GET /{$}", app.rootHandler)
+	if app.enabledModules["webui"] {
+		mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+		mux.HandleFunc("GET /{$}", app.rootHandler)
+	} else {
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/api/v1/posts", http.StatusMovedPermanently)
+		})
+	}
 	mux.HandleFunc("GET /api/v1/posts", app.getPosts)
 	mux.HandleFunc("GET /api/v1/posts/{id}", app.getPost)
 	mux.Handle("POST /api/v1/posts", app.basicAuthMiddleware(enforceJSONMiddleware(app.createPost)))
@@ -60,9 +101,29 @@ func main() {
 	mux.Handle("DELETE /api/v1/posts/{id}", app.basicAuthMiddleware(app.deletePost))
 	mux.HandleFunc("GET /api/v1/healthz", app.healthCheckHandler)
 
-	// Main HTTPS server
-	httpsServer := &http.Server{
-		Addr:              ":443",
+	// // Main HTTPS server
+	// httpsServer := &http.Server{
+	// 	Addr:              ":443",
+	// 	Handler:           requestLoggerMiddleware(mux),
+	// 	ReadTimeout:       5 * time.Second,
+	// 	WriteTimeout:      10 * time.Second,
+	// 	IdleTimeout:       30 * time.Second,
+	// 	ReadHeaderTimeout: 2 * time.Second,
+	// }
+
+	// // Start HTTPS server
+	// go func() {
+	// 	log.Printf("HTTPS Server is listening on %s", httpsServer.Addr)
+	// 	err := httpsServer.ListenAndServeTLS("certs/localhost.pem", "certs/localhost-key.pem")
+	// 	if !errors.Is(err, http.ErrServerClosed) {
+	// 		log.Fatal(err)
+	// 	}
+	// }()
+
+	// HTTP server for redirects to HTTPS
+	httpServer := &http.Server{
+		Addr: fmt.Sprintf(":%d", cfg.Port),
+		// Handler: requestLoggerMiddleware(httpsRedirectMiddleware(http.NotFoundHandler())),
 		Handler:           requestLoggerMiddleware(mux),
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -70,25 +131,10 @@ func main() {
 		ReadHeaderTimeout: 2 * time.Second,
 	}
 
-	// Start HTTPS server
-	go func() {
-		log.Printf("HTTPS Server is listening on %s", httpsServer.Addr)
-		err := httpsServer.ListenAndServeTLS("certs/localhost.pem", "certs/localhost-key.pem")
-		if !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal(err)
-		}
-	}()
-
-	// HTTP server for redirects to HTTPS
-	httpServer := &http.Server{
-		Addr:              ":80",
-		Handler:           requestLoggerMiddleware(httpsRedirectMiddleware(http.NotFoundHandler())),
-		ReadHeaderTimeout: 2 * time.Second,
-	}
-
 	// Start HTTP server
 	go func() {
-		log.Print("HTTP Server is listening on :80 for redirection")
+		// log.Printf("HTTP Server is listening on %s for redirection\n", addr)
+		log.Printf("HTTP Server is listening on :%d\n", cfg.Port)
 		err := httpServer.ListenAndServe()
 		if !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal(err)
@@ -101,12 +147,13 @@ func main() {
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 		s := <-quit
-		log.Printf("Shutting down server: %v", s)
+		log.Printf("Shutting down server: %v\n", s)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		shutdownError <- httpsServer.Shutdown(ctx)
+		// shutdownError <- httpsServer.Shutdown(ctx)
+		shutdownError <- httpServer.Shutdown(ctx)
 	}()
 
 	err = <-shutdownError
@@ -117,30 +164,12 @@ func main() {
 	log.Print("Server has been stopped")
 }
 
-func httpsRedirectMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Scheme != "https" {
-			if r.Method != http.MethodGet && r.Method != http.MethodHead {
-				http.Error(w, "HTTPS is required for this request method.", http.StatusUpgradeRequired)
-				return
-			}
-
-			httpsURL := "https://" + r.Host + r.URL.Path
-			if r.URL.RawQuery != "" {
-				httpsURL += "?" + r.URL.RawQuery
-			}
-			http.Redirect(w, r, httpsURL, http.StatusMovedPermanently)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func requestLoggerMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		log.Println(rec.statusCode, r.Method, r.URL.Path, r.RemoteAddr)
+		clientAddr := r.Header.Get("X-Client-IP")
+		log.Println(rec.statusCode, r.Method, r.URL.Path, r.RemoteAddr, clientAddr)
 	})
 }
 
@@ -179,6 +208,12 @@ func (app *application) rootHandler(w http.ResponseWriter, r *http.Request) {
 
 func (app *application) basicAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return early if auth is disabled
+		if !app.enabledModules["auth"] {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		username, password, ok := r.BasicAuth()
 		if ok {
 			usernameHash := sha256.Sum256([]byte(username))
@@ -206,12 +241,14 @@ func (app *application) healthCheckHandler(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// Ping database
-	err = app.db.Ping(ctx)
-	if err != nil {
-		log.Printf("Database failure: %v", err)
-		http.Error(w, "Database failure", http.StatusInternalServerError)
-		return
+	if app.enabledModules["database"] {
+		// Ping database
+		err = app.db.Ping(ctx)
+		if err != nil {
+			log.Printf("Database failure: %v", err)
+			http.Error(w, "Database failure", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -244,3 +281,22 @@ func enforceJSONMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// func httpsRedirectMiddleware(next http.Handler) http.Handler {
+// 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// 		if r.URL.Scheme != "https" {
+// 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+// 				http.Error(w, "HTTPS is required for this request method.", http.StatusUpgradeRequired)
+// 				return
+// 			}
+
+// 			httpsURL := "https://" + r.Host + r.URL.Path
+// 			if r.URL.RawQuery != "" {
+// 				httpsURL += "?" + r.URL.RawQuery
+// 			}
+// 			http.Redirect(w, r, httpsURL, http.StatusMovedPermanently)
+// 			return
+// 		}
+// 		next.ServeHTTP(w, r)
+// 	})
+// }

@@ -8,21 +8,24 @@
 /http-server
 │
 ├── certs/
-│ ├── localhost.pem
-│ └── localhost-key.pem
+│ ├── nginx-selfsigned.crt
+│ └── nginx-selfsigned.key
+│
+├── config/
+│ ├── init.sql
+│ └── nginx.conf
 │
 ├── main.go
 └── ...
 ```
 
-<!-- ## Components
-
-- HTTP Server for redirects
-- HTTPS Server
-- Logger middleware -->
-
 ## Technologies Used
 
 - Go
-- GitHub Actions
 - Docker & Docker Compose
+- Nginx
+- PostgreSQL
+- GitHub Actions
+  <!-- - gRPC -->
+  <!-- - Cobra library used for gRPC client -->
+  <!-- - Bubble Tea framework used to build  terminal user interface for gRPC client -->

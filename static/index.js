@@ -26,6 +26,7 @@ document
       .then((response) => {
         if (response.ok) {
           localStorage.setItem("author", author)
+          document.getElementById("message").value = ""
           window.location.reload()
         } else {
           alert("Failed to add post")
