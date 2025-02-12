@@ -16,8 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	pb "github.com/chtozamm/http-server/grpc"
+	// pb "github.com/chtozamm/http-server/grpc"
 )
 
 type application struct {
@@ -27,7 +26,7 @@ type application struct {
 	}
 	db             *pgxpool.Pool
 	enabledModules map[string]bool
-	pb.UnimplementedHttpServerServiceServer
+	// pb.UnimplementedHttpServerServiceServer
 }
 
 func main() {
@@ -300,3 +299,4 @@ func enforceJSONMiddleware(next http.HandlerFunc) http.HandlerFunc {
 // 		next.ServeHTTP(w, r)
 // 	})
 // }
+
